@@ -51,7 +51,7 @@ func upgradeDeduplicateData(db ethdb.Database) func() error {
 
 	go func() {
 		// Create an iterator to read the entire database and convert old lookup entires
-		it := db.(*ethdb.BadgerDatabase).NewIterator()
+		it := db.(*ethdb.BoltDatabase).NewIterator()
 		defer func() {
 			if it.Released() != true {
 				it.Release()
@@ -101,7 +101,7 @@ func upgradeDeduplicateData(db ethdb.Database) func() error {
 			converted++
 			if converted%100000 == 0 {
 				it.Release()
-				it = db.(*ethdb.BadgerDatabase).NewIterator()
+				it = db.(*ethdb.BoltDatabase).NewIterator()
 				it.Seek(key)
 
 				log.Info("Deduplicating database entries", "deduped", converted)

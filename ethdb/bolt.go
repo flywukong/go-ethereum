@@ -24,18 +24,17 @@ import (
 	
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
-	"github.com/dgraph-io/badger"
-	"github.com/dgraph-io/badger/options"
+	"github.com/boltdb/bolt"
 	"github.com/ethereum/go-ethereum/common"
 	
 )
 
 
 
-type BadgerDatabase struct {
+type BoltDatabase struct {
 	fn 				string      // filename for reporting
-	db				*badger.DB 
-	badgerCache		*BadgerCache
+	db				*bolt.DB 
+	boltCache		*BoltCache
 	getTimer       metrics.Timer // Timer for measuring the database get request counts and latencies
 	putTimer       metrics.Timer // Timer for measuring the database put request counts and latencies
 	delTimer       metrics.Timer // Timer for measuring the database delete request counts and latencies
@@ -53,38 +52,37 @@ type BadgerDatabase struct {
 }
 
 // NewLDBDatabase returns a LevelDB wrapped object.
-func NewBadgerDatabase(file string) (*BadgerDatabase, error) {
+func NewBoltDatabase(file string) (*BoltDatabase, error) {
 	logger := log.New("database", file)
 	
-	opts := badger.DefaultOptions
-	opts.Dir = file
-	opts.ValueDir = file
-	opts.SyncWrites = false
-	opts.ValueLogFileSize = 1 << 30
-	opts.TableLoadingMode = options.MemoryMap
-	db, err := badger.Open(opts)
 
+	db, err := bolt.Open(file, 0600, nil)
 	// (Re)check for errors and abort if opening of the db failed
 	if err != nil {
 		return nil, err
 	}
-	ret := &BadgerDatabase{
+	ret := &BoltDatabase{
 		fn:  file,
 		db:  db,
 		log: logger,
 	}
+	db.Update(func(tx *bolt.Tx) error {
+		tx.CreateBucketIfNotExists([]byte("MyBucket"))
+		return nil
+	})
 	
-	ret.badgerCache = &BadgerCache{db: ret, c: make(map[string][]byte), size: 0, limit: 500000000}
+	
+	ret.boltCache = &BoltCache{db: ret, c: make(map[string][]byte), size: 0, limit: 50000000}
 	return ret, nil
 }
 
 // Path returns the path to the database directory.
-func (db *BadgerDatabase) Path() string {
+func (db *BoltDatabase) Path() string {
 	return db.fn
 }
 
 // Put puts the given key / value to the queue
-func (db *BadgerDatabase) Put(key []byte, value []byte) error {
+func (db *BoltDatabase) Put(key []byte, value []byte) error {
 	// Measure the database put latency, if requested
 	if db.putTimer != nil {
 		defer db.putTimer.UpdateSince(time.Now())
@@ -96,90 +94,86 @@ func (db *BadgerDatabase) Put(key []byte, value []byte) error {
 		db.writeMeter.Mark(int64(len(value)))
 	}
 	
-	db.badgerCache.lock.Lock()
-	db.badgerCache.c[string(key)] = common.CopyBytes(value)
-	db.badgerCache.size += len(value)+len(key)
-	db.badgerCache.lock.Unlock()
+	db.boltCache.lock.Lock()
+	db.boltCache.c[string(key)] = common.CopyBytes(value)
+	db.boltCache.size += len(value)+len(key)
+	db.boltCache.lock.Unlock()
 	
-	if db.badgerCache.size >= db.badgerCache.limit {
-		return db.badgerCache.Flush()
+	if db.boltCache.size >= db.boltCache.limit {
+		return db.boltCache.Flush()
 	}
 	
 	return nil
 }
 
-func (db *BadgerDatabase) Has(key []byte) (ret bool, err error) {
-	db.badgerCache.lock.RLock()
-	defer db.badgerCache.lock.RUnlock()
-	if db.badgerCache.c[string(key)] != nil {
+func (db *BoltDatabase) Has(key []byte) (ret bool, err error) {
+	db.boltCache.lock.RLock()
+	defer db.boltCache.lock.RUnlock()
+	if db.boltCache.c[string(key)] != nil {
 		return true, nil
 	}
 	
-	err = db.db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(key)
-		if item != nil {
+	err = db.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("MyBucket"))
+		value := b.Get(key)
+		if value == nil {
+			ret = false
+		}else {
 			ret = true
 		}
-		if err == badger.ErrKeyNotFound {
-			ret = false
-			err = nil
-		}
-		return err
+		return nil
 	})
+	
 	return ret, err
 }
 
-type BadgerCache struct {
-	db		*BadgerDatabase
+type BoltCache struct {
+	db		*BoltDatabase
 	c	 	map[string][]byte
 	size	int
 	limit	int
 	lock 	sync.RWMutex
 }
 
-func (badgerCache *BadgerCache) Flush() (err error) {
-	badgerCache.lock.Lock()
-	defer badgerCache.lock.Unlock()
-	
-	txn := badgerCache.db.db.NewTransaction(true)
-	
-	for key, value := range badgerCache.c {
-		err = txn.Set([]byte(key), value)
-		if err == badger.ErrTxnTooBig {
-		    txn.Commit(nil)
-		    txn = badgerCache.db.db.NewTransaction(true)
-		    err = txn.Set([]byte(key), value)
+func (boltCache *BoltCache) Flush() (err error) {
+	boltCache.lock.Lock()
+	defer boltCache.lock.Unlock()
+	log.Info("Bolt flushing starts, 100mb takes ~1m", "boltCache size", boltCache.size)
+	err = boltCache.db.db.Batch(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("MyBucket"))
+		
+		for key, value := range boltCache.c {
+			err = b.Put([]byte(key), value)
 		}
-	}
-	err = txn.Commit(nil)
-	log.Info("Badger flushed to disk", "badgerCache size", badgerCache.size)
-	badgerCache.size = 0
-	badgerCache.c = make(map[string][]byte)
+		
+		
+		return err
+	})
+	log.Info("Bolt flushed to disk", "boltCache size", boltCache.size)
+	boltCache.size = 0
+	boltCache.c = make(map[string][]byte)
 	return err
 }
 
 // Get returns the given key if it's present.
-func (db *BadgerDatabase) Get(key []byte) (dat []byte, err error) {
+func (db *BoltDatabase) Get(key []byte) (dat []byte, err error) {
 	// Measure the database get latency, if requested
 	if db.getTimer != nil {
 		defer db.getTimer.UpdateSince(time.Now())
 	}
 	
 	
-	db.badgerCache.lock.RLock()
-	dat = db.badgerCache.c[string(key)]
-	db.badgerCache.lock.RUnlock()
+	db.boltCache.lock.RLock()
+	dat = db.boltCache.c[string(key)]
+	db.boltCache.lock.RUnlock()
+	
 	if dat == nil {
-		err = db.db.View(func(txn *badger.Txn) error {
-			item, err := txn.Get(key)
-			if err != nil {
-				return err
+		err = db.db.View(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte("MyBucket"))
+			value := b.Get(key)
+			if value != nil {
+				dat = common.CopyBytes(value)
 			}
-			val, err := item.Value()
-			if err != nil {
-				return err
-			}
-			dat = common.CopyBytes(val)
 			return nil
 		})
 	}
@@ -198,78 +192,79 @@ func (db *BadgerDatabase) Get(key []byte) (dat []byte, err error) {
 }
 
 // Delete deletes the key from the queue and database
-func (db *BadgerDatabase) Delete(key []byte) error {
+func (db *BoltDatabase) Delete(key []byte) error {
 	// Measure the database delete latency, if requested
 	if db.delTimer != nil {
 		defer db.delTimer.UpdateSince(time.Now())
 	}
 	// Execute the actual operation
-	db.badgerCache.lock.Lock()
-	delete(db.badgerCache.c, string(key))
+	db.boltCache.lock.Lock()
+	delete(db.boltCache.c, string(key))
 	
 	//TODO: also subtract len(value)
-	db.badgerCache.size-=len(key)
-	db.badgerCache.lock.Unlock()
-	return db.db.Update(func(txn *badger.Txn) error {
-  		err := txn.Delete(key)
-		if err == badger.ErrKeyNotFound {
-			err = nil
-		}
-  		return err
+	db.boltCache.size-=len(key)
+	db.boltCache.lock.Unlock()
+	
+	return db.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("MyBucket"))
+		err := b.Delete(key)
+		return err
 	})
 }
 
-type badgerIterator struct {
-	txn 				*badger.Txn
-	internIterator		*badger.Iterator
+type boltIterator struct {
+	txn 				*bolt.Tx
+	internIterator		*bolt.Cursor
 	released			bool
 	initialised			bool
+	currentKey			[]byte
+	currentValue		[]byte
 }
 
-func (it *badgerIterator) Release() {
-	it.internIterator.Close()
-	it.txn.Discard()
+func (it *boltIterator) Release() {
+	it.txn.Commit()
 	it.released = true
+	it.currentKey, it.currentValue = nil, nil
 }
 
-func (it *badgerIterator) Released() bool {
+func (it *boltIterator) Released() bool {
 	return it.released
 }
 
-func (it *badgerIterator) Next() bool {
+func (it *boltIterator) Next() bool {
 	if(!it.initialised) {
-		it.internIterator.Rewind()
+		it.currentKey, it.currentValue = it.internIterator.First()
 		it.initialised = true
 	} else {
-		it.internIterator.Next()
+		it.currentKey, it.currentValue = it.internIterator.Next()
 	}
-	return it.internIterator.Valid()
-}
-
-func (it *badgerIterator) Seek(key []byte) {
-	it.internIterator.Seek(key)
-}
-
-func (it *badgerIterator) Key() []byte {
-	return it.internIterator.Item().Key()
-}
-
-func (it *badgerIterator) Value() []byte {
-	value, err := it.internIterator.Item().Value()
-	if err != nil {
-		return nil
+	if it.currentKey != nil {
+		return true
+	}else {
+		return false
 	}
-	return value
 }
 
-func (db *BadgerDatabase) NewIterator() badgerIterator {
-	txn := db.db.NewTransaction(false)
-	opts := badger.DefaultIteratorOptions
-	internIterator := txn.NewIterator(opts)
-	return badgerIterator{txn: txn, internIterator: internIterator, released: false, initialised: false}
+func (it *boltIterator) Seek(key []byte) {
+	it.currentKey, it.currentValue = it.internIterator.Seek(key)
 }
 
-func (db *BadgerDatabase) Close() {
+func (it *boltIterator) Key() []byte {
+	return it.currentKey
+}
+
+func (it *boltIterator) Value() []byte {
+	return it.currentValue
+}
+
+func (db *BoltDatabase) NewIterator() boltIterator {
+	txn, _ := db.db.Begin(false)
+	b := txn.Bucket([]byte("MyBucket"))
+	internIterator := b.Cursor()
+	return boltIterator{txn: txn, internIterator: internIterator, released: false, initialised: false}
+}
+
+func (db *BoltDatabase) Close() {
 	// Stop the metrics collection to avoid internal database races
 	db.quitLock.Lock()
 	defer db.quitLock.Unlock()
@@ -281,7 +276,7 @@ func (db *BadgerDatabase) Close() {
 			db.log.Error("Metrics collection failed", "err", err)
 		}
 	}
-	db.badgerCache.Flush()
+	db.boltCache.Flush()
 	err := db.db.Close()
 	if err == nil {
 		db.log.Info("Database closed")
@@ -384,48 +379,47 @@ func (db *BadgerDatabase) meter(refresh time.Duration) {
 	}
 }
 */
-func (db *BadgerDatabase) NewBatch() Batch {
-	return &badgerBatch{db: db}
+func (db *BoltDatabase) NewBatch() Batch {
+	return &boltBatch{db: db}
 }
 
-type badgerBatch struct {
-	db		*BadgerDatabase
+type boltBatch struct {
+	db		*BoltDatabase
 	size int
 }
 
-func (b *badgerBatch) Put(key, value []byte) error {
-	b.db.badgerCache.lock.Lock()
-	b.db.badgerCache.c[string(key)] = common.CopyBytes(value)
-	b.db.badgerCache.size += len(value)+len(key)
-	b.db.badgerCache.lock.Unlock()
-	if b.db.badgerCache.size >= b.db.badgerCache.limit {
-		b.db.badgerCache.Flush()
+func (b *boltBatch) Put(key, value []byte) error {
+	b.db.boltCache.lock.Lock()
+	b.db.boltCache.c[string(key)] = common.CopyBytes(value)
+	b.db.boltCache.size += len(value)+len(key)
+	b.db.boltCache.lock.Unlock()
+	if b.db.boltCache.size >= b.db.boltCache.limit {
+		b.db.boltCache.Flush()
 	}
 	b.size += len(value)
 	return nil
 }
 
-func (b *badgerBatch) Write() error {
+func (b *boltBatch) Write() error {
 	b.size = 0
-	if b.db.badgerCache.size >= b.db.badgerCache.limit {
-		return b.db.badgerCache.Flush()
+	if b.db.boltCache.size >= b.db.boltCache.limit {
+		return b.db.boltCache.Flush()
 	}
 	return nil
 }
 
-func (b *badgerBatch) Discard() {
+func (b *boltBatch) Discard() {
 	b.size = 0
 }
 
-func (b *badgerBatch) ValueSize() int {
+func (b *boltBatch) ValueSize() int {
 	return b.size
 }
 
-func (b *badgerBatch) Reset() {
+func (b *boltBatch) Reset() {
 	b.size = 0
 }
 
-/*
 type table struct {
 	db     Database
 	prefix string
@@ -489,4 +483,3 @@ func (tb *tableBatch) ValueSize() int {
 func (tb *tableBatch) Reset() {
 	tb.batch.Reset()
 }
-*/
