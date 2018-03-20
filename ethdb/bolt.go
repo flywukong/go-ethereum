@@ -34,20 +34,18 @@ import (
 type BoltDatabase struct {
 	fn 				string      // filename for reporting
 	db				*bolt.DB 
-	boltCache		*BoltCache
 	getTimer       metrics.Timer // Timer for measuring the database get request counts and latencies
 	putTimer       metrics.Timer // Timer for measuring the database put request counts and latencies
 	delTimer       metrics.Timer // Timer for measuring the database delete request counts and latencies
 	missMeter      metrics.Meter // Meter for measuring the missed database get requests
 	readMeter      metrics.Meter // Meter for measuring the database get request data usage
 	writeMeter     metrics.Meter // Meter for measuring the database put request data usage
-	compTimeMeter  metrics.Meter // Meter for measuring the total time spent in database compaction
-	compReadMeter  metrics.Meter // Meter for measuring the data read during compaction
-	compWriteMeter metrics.Meter // Meter for measuring the data written during compaction
+	batchPutTimer  		metrics.Timer
+	batchWriteTimer 	metrics.Timer
+	batchWriteMeter		metrics.Meter
 
 	quitLock sync.Mutex      // Mutex protecting the quit channel access
-	quitChan chan chan error // Quit channel to stop the metrics collection before closing the database
-
+	
 	log log.Logger // Contextual logger tracking the database path
 }
 
@@ -72,7 +70,6 @@ func NewBoltDatabase(file string) (*BoltDatabase, error) {
 	})
 	
 	
-	ret.boltCache = &BoltCache{db: ret, c: make(map[string][]byte), size: 0, limit: 50000000}
 	return ret, nil
 }
 
@@ -83,36 +80,22 @@ func (db *BoltDatabase) Path() string {
 
 // Put puts the given key / value to the queue
 func (db *BoltDatabase) Put(key []byte, value []byte) error {
-	// Measure the database put latency, if requested
 	if db.putTimer != nil {
 		defer db.putTimer.UpdateSince(time.Now())
 	}
-	// Generate the data to write to disk, update the meter and write
-	//value = rle.Compress(value)
 
 	if db.writeMeter != nil {
 		db.writeMeter.Mark(int64(len(value)))
 	}
 	
-	db.boltCache.lock.Lock()
-	db.boltCache.c[string(key)] = common.CopyBytes(value)
-	db.boltCache.size += len(value)+len(key)
-	db.boltCache.lock.Unlock()
-	
-	if db.boltCache.size >= db.boltCache.limit {
-		return db.boltCache.Flush()
-	}
-	
-	return nil
+	return db.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("MyBucket"))
+		err := b.Put([]byte(key), value)
+		return err
+	})
 }
 
 func (db *BoltDatabase) Has(key []byte) (ret bool, err error) {
-	db.boltCache.lock.RLock()
-	defer db.boltCache.lock.RUnlock()
-	if db.boltCache.c[string(key)] != nil {
-		return true, nil
-	}
-	
 	err = db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("MyBucket"))
 		value := b.Get(key)
@@ -127,33 +110,6 @@ func (db *BoltDatabase) Has(key []byte) (ret bool, err error) {
 	return ret, err
 }
 
-type BoltCache struct {
-	db		*BoltDatabase
-	c	 	map[string][]byte
-	size	int
-	limit	int
-	lock 	sync.RWMutex
-}
-
-func (boltCache *BoltCache) Flush() (err error) {
-	boltCache.lock.Lock()
-	defer boltCache.lock.Unlock()
-	log.Info("Bolt flushing starts, 100mb takes ~1m", "boltCache size", boltCache.size)
-	err = boltCache.db.db.Batch(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("MyBucket"))
-		
-		for key, value := range boltCache.c {
-			err = b.Put([]byte(key), value)
-		}
-		
-		
-		return err
-	})
-	log.Info("Bolt flushed to disk", "boltCache size", boltCache.size)
-	boltCache.size = 0
-	boltCache.c = make(map[string][]byte)
-	return err
-}
 
 // Get returns the given key if it's present.
 func (db *BoltDatabase) Get(key []byte) (dat []byte, err error) {
@@ -163,20 +119,14 @@ func (db *BoltDatabase) Get(key []byte) (dat []byte, err error) {
 	}
 	
 	
-	db.boltCache.lock.RLock()
-	dat = db.boltCache.c[string(key)]
-	db.boltCache.lock.RUnlock()
-	
-	if dat == nil {
-		err = db.db.View(func(tx *bolt.Tx) error {
-			b := tx.Bucket([]byte("MyBucket"))
-			value := b.Get(key)
-			if value != nil {
-				dat = common.CopyBytes(value)
-			}
-			return nil
-		})
-	}
+	err = db.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("MyBucket"))
+		value := b.Get(key)
+		if value != nil {
+			dat = common.CopyBytes(value)
+		}
+		return nil
+	})
 	if err != nil {
 		if db.missMeter != nil {
 			db.missMeter.Mark(1)
@@ -197,13 +147,6 @@ func (db *BoltDatabase) Delete(key []byte) error {
 	if db.delTimer != nil {
 		defer db.delTimer.UpdateSince(time.Now())
 	}
-	// Execute the actual operation
-	db.boltCache.lock.Lock()
-	delete(db.boltCache.c, string(key))
-	
-	//TODO: also subtract len(value)
-	db.boltCache.size-=len(key)
-	db.boltCache.lock.Unlock()
 	
 	return db.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("MyBucket"))
@@ -265,18 +208,6 @@ func (db *BoltDatabase) NewIterator() boltIterator {
 }
 
 func (db *BoltDatabase) Close() {
-	// Stop the metrics collection to avoid internal database races
-	db.quitLock.Lock()
-	defer db.quitLock.Unlock()
-
-	if db.quitChan != nil {
-		errc := make(chan error)
-		db.quitChan <- errc
-		if err := <-errc; err != nil {
-			db.log.Error("Metrics collection failed", "err", err)
-		}
-	}
-	db.boltCache.Flush()
 	err := db.db.Close()
 	if err == nil {
 		db.log.Info("Database closed")
@@ -285,130 +216,71 @@ func (db *BoltDatabase) Close() {
 	}
 }
 
-/*
 // Meter configures the database metrics collectors and
-func (db *BadgerDatabase) Meter(prefix string) {
+func (db *BoltDatabase) Meter(prefix string) {
 	// Short circuit metering if the metrics system is disabled
 	if !metrics.Enabled {
 		return
 	}
 	// Initialize all the metrics collector at the requested prefix
-	db.getTimer = metrics.NewTimer(prefix + "user/gets")
-	db.putTimer = metrics.NewTimer(prefix + "user/puts")
-	db.delTimer = metrics.NewTimer(prefix + "user/dels")
-	db.missMeter = metrics.NewMeter(prefix + "user/misses")
-	db.readMeter = metrics.NewMeter(prefix + "user/reads")
-	db.writeMeter = metrics.NewMeter(prefix + "user/writes")
-	db.compTimeMeter = metrics.NewMeter(prefix + "compact/time")
-	db.compReadMeter = metrics.NewMeter(prefix + "compact/input")
-	db.compWriteMeter = metrics.NewMeter(prefix + "compact/output")
-
-	// Create a quit channel for the periodic collector and run it
-	db.quitLock.Lock()
-	db.quitChan = make(chan chan error)
-	db.quitLock.Unlock()
-
-	go db.meter(3 * time.Second)
+	db.getTimer = metrics.NewRegisteredTimer(prefix+"user/gets", nil)
+	db.putTimer = metrics.NewRegisteredTimer(prefix+"user/puts", nil)
+	db.delTimer = metrics.NewRegisteredTimer(prefix+"user/dels", nil)
+	db.missMeter = metrics.NewRegisteredMeter(prefix+"user/misses", nil)
+	db.readMeter = metrics.NewRegisteredMeter(prefix+"user/reads", nil)
+	db.writeMeter = metrics.NewRegisteredMeter(prefix+"user/writes", nil)
+	db.batchPutTimer = metrics.NewRegisteredTimer(prefix+"user/batchPuts", nil)
+	db.batchWriteTimer = metrics.NewRegisteredTimer(prefix+"user/batchWriteTimes", nil)
+	db.batchWriteMeter = metrics.NewRegisteredMeter(prefix+"user/batchWrites", nil)
 }
-*/
 
-/*
-func (db *BadgerDatabase) meter(refresh time.Duration) {
-	// Create the counters to store current and previous values
-	counters := make([][]float64, 2)
-	for i := 0; i < 2; i++ {
-		counters[i] = make([]float64, 3)
-	}
-	// Iterate ad infinitum and collect the stats
-	for i := 1; ; i++ {
-		// Retrieve the database stats
-		stats, err := db.db.GetProperty("leveldb.stats")
-		if err != nil {
-			db.log.Error("Failed to read database stats", "err", err)
-			return
-		}
-		// Find the compaction table, skip the header
-		lines := strings.Split(stats, "\n")
-		for len(lines) > 0 && strings.TrimSpace(lines[0]) != "Compactions" {
-			lines = lines[1:]
-		}
-		if len(lines) <= 3 {
-			db.log.Error("Compaction table not found")
-			return
-		}
-		lines = lines[3:]
 
-		// Iterate over all the table rows, and accumulate the entries
-		for j := 0; j < len(counters[i%2]); j++ {
-			counters[i%2][j] = 0
-		}
-		for _, line := range lines {
-			parts := strings.Split(line, "|")
-			if len(parts) != 6 {
-				break
-			}
-			for idx, counter := range parts[3:] {
-				value, err := strconv.ParseFloat(strings.TrimSpace(counter), 64)
-				if err != nil {
-					db.log.Error("Compaction entry parsing failed", "err", err)
-					return
-				}
-				counters[i%2][idx] += value
-			}
-		}
-		// Update all the requested meters
-		if db.compTimeMeter != nil {
-			db.compTimeMeter.Mark(int64((counters[i%2][0] - counters[(i-1)%2][0]) * 1000 * 1000 * 1000))
-		}
-		if db.compReadMeter != nil {
-			db.compReadMeter.Mark(int64((counters[i%2][1] - counters[(i-1)%2][1]) * 1024 * 1024))
-		}
-		if db.compWriteMeter != nil {
-			db.compWriteMeter.Mark(int64((counters[i%2][2] - counters[(i-1)%2][2]) * 1024 * 1024))
-		}
-		// Sleep a bit, then repeat the stats collection
-		select {
-		case errc := <-db.quitChan:
-			// Quit requesting, stop hammering the database
-			errc <- nil
-			return
-
-		case <-time.After(refresh):
-			// Timeout, gather a new set of stats
-		}
-	}
-}
-*/
 func (db *BoltDatabase) NewBatch() Batch {
-	return &boltBatch{db: db}
+	return &boltBatch{db: db, b: make(map[string][]byte)}
 }
 
 type boltBatch struct {
 	db		*BoltDatabase
+	b		map[string][]byte
 	size int
 }
 
 func (b *boltBatch) Put(key, value []byte) error {
-	b.db.boltCache.lock.Lock()
-	b.db.boltCache.c[string(key)] = common.CopyBytes(value)
-	b.db.boltCache.size += len(value)+len(key)
-	b.db.boltCache.lock.Unlock()
-	if b.db.boltCache.size >= b.db.boltCache.limit {
-		b.db.boltCache.Flush()
+	if b.db.batchPutTimer != nil {
+		defer b.db.batchPutTimer.UpdateSince(time.Now())
 	}
+	
+	b.b[string(key)] = common.CopyBytes(value)
 	b.size += len(value)
 	return nil
 }
 
-func (b *boltBatch) Write() error {
-	b.size = 0
-	if b.db.boltCache.size >= b.db.boltCache.limit {
-		return b.db.boltCache.Flush()
+func (b *boltBatch) Write() (err error) {
+	if b.db.batchWriteTimer != nil {
+		defer b.db.batchWriteTimer.UpdateSince(time.Now())
 	}
-	return nil
+
+	if b.db.batchWriteMeter != nil {
+		b.db.batchWriteMeter.Mark(int64(b.size))
+	}
+	
+	err = b.db.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("MyBucket"))
+		
+		for key, value := range b.b {
+			err = bucket.Put([]byte(key), value)
+		}
+
+		return err
+	})
+	
+	b.size = 0
+	b.b = make(map[string][]byte)
+	return err
 }
 
 func (b *boltBatch) Discard() {
+	b.b = make(map[string][]byte)
 	b.size = 0
 }
 
@@ -417,6 +289,7 @@ func (b *boltBatch) ValueSize() int {
 }
 
 func (b *boltBatch) Reset() {
+	b.b = make(map[string][]byte)
 	b.size = 0
 }
 
