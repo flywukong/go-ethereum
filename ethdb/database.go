@@ -46,6 +46,9 @@ type LDBDatabase struct {
 	compTimeMeter  metrics.Meter // Meter for measuring the total time spent in database compaction
 	compReadMeter  metrics.Meter // Meter for measuring the data read during compaction
 	compWriteMeter metrics.Meter // Meter for measuring the data written during compaction
+	batchPutTimer  		metrics.Timer
+	batchWriteTimer 	metrics.Timer
+	batchWriteMeter metrics.Meter
 
 	quitLock sync.Mutex      // Mutex protecting the quit channel access
 	quitChan chan chan error // Quit channel to stop the metrics collection before closing the database
@@ -187,6 +190,9 @@ func (db *LDBDatabase) Meter(prefix string) {
 	db.compTimeMeter = metrics.NewRegisteredMeter(prefix+"compact/time", nil)
 	db.compReadMeter = metrics.NewRegisteredMeter(prefix+"compact/input", nil)
 	db.compWriteMeter = metrics.NewRegisteredMeter(prefix+"compact/output", nil)
+	db.batchPutTimer = metrics.NewRegisteredTimer(prefix+"user/batchPuts", nil)
+	db.batchWriteTimer = metrics.NewRegisteredTimer(prefix+"user/batchWriteTimes", nil)
+	db.batchWriteMeter = metrics.NewRegisteredMeter(prefix+"user/batchWrites", nil)
 
 	// Create a quit channel for the periodic collector and run it
 	db.quitLock.Lock()
@@ -274,23 +280,35 @@ func (db *LDBDatabase) meter(refresh time.Duration) {
 }
 
 func (db *LDBDatabase) NewBatch() Batch {
-	return &ldbBatch{db: db.db, b: new(leveldb.Batch)}
+	return &ldbBatch{db: db, b: new(leveldb.Batch)}
 }
 
 type ldbBatch struct {
-	db   *leveldb.DB
+	db   *LDBDatabase
 	b    *leveldb.Batch
 	size int
 }
 
 func (b *ldbBatch) Put(key, value []byte) error {
+	if b.db.batchPutTimer != nil {
+		defer b.db.batchPutTimer.UpdateSince(time.Now())
+	}
+	
 	b.b.Put(key, value)
 	b.size += len(value)
 	return nil
 }
 
 func (b *ldbBatch) Write() error {
-	return b.db.Write(b.b, nil)
+	if b.db.batchWriteTimer != nil {
+		defer b.db.batchWriteTimer.UpdateSince(time.Now())
+	}
+
+	if b.db.batchWriteMeter != nil {
+		b.db.batchWriteMeter.Mark(int64(b.size))
+	}
+	
+	return b.db.db.Write(b.b, nil)
 }
 
 func (b *ldbBatch) ValueSize() int {

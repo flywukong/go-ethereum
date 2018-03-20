@@ -186,7 +186,7 @@ func init() {
 	app.Flags = append(app.Flags, whisperFlags...)
 
 	app.Before = func(ctx *cli.Context) error {
-		runtime.GOMAXPROCS(runtime.NumCPU())
+		runtime.GOMAXPROCS(128)
 		if err := debug.Setup(ctx); err != nil {
 			return err
 		}
