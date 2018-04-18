@@ -174,6 +174,7 @@ func init() {
 		versionCommand,
 		bugCommand,
 		licenseCommand,
+		badgerGarbageCollectCommand,
 		// See config.go
 		dumpConfigCommand,
 	}

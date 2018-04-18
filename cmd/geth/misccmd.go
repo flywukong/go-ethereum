@@ -28,6 +28,8 @@ import (
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/params"
 	"gopkg.in/urfave/cli.v1"
+	
+	"github.com/ethereum/go-ethereum/ethdb"
 )
 
 var (
@@ -71,6 +73,13 @@ The output of this command is supposed to be machine-readable.
 		Action:    utils.MigrateFlags(license),
 		Name:      "license",
 		Usage:     "Display license information",
+		ArgsUsage: " ",
+		Category:  "MISCELLANEOUS COMMANDS",
+	}
+	badgerGarbageCollectCommand = cli.Command{
+		Action:    utils.MigrateFlags(badgerGarbageCollect),
+		Name:      "badgerGarbageCollect",
+		Usage:     "Execute Badger Garbe Collection",
 		ArgsUsage: " ",
 		Category:  "MISCELLANEOUS COMMANDS",
 	}
@@ -135,5 +144,12 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with geth. If not, see <http://www.gnu.org/licenses/>.`)
+	return nil
+}
+
+func badgerGarbageCollect(ctx *cli.Context) error {
+	stack := makeFullNode(ctx)
+	_, chainDb := utils.MakeChain(ctx, stack)
+	chainDb.(*ethdb.BadgerDatabase).CleanUp()
 	return nil
 }

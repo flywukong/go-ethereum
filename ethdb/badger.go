@@ -80,6 +80,21 @@ func (db *BadgerDatabase) Path() string {
 	return db.fn
 }
 
+func (db *BadgerDatabase) CleanUp() {
+	lsm, vlog := db.db.Size()
+	log.Info("Starting database garbage collection; db.size", "lsm", lsm, "vlog", vlog)
+	err := db.db.PurgeOlderVersions()
+	if err != nil {
+		log.Info("PurgeOlderVersions error", "err", err)
+		err = nil
+	}
+	err = db.db.RunValueLogGC(0.9)
+	if err != nil {
+		log.Info("RunValueLogGC error", "err", err)
+	}
+	log.Info("Database garbage collection done; db.size", "lsm", lsm, "vlog", vlog)
+}
+
 // Put puts the given key / value to the queue
 func (db *BadgerDatabase) Put(key []byte, value []byte) error {	
 	if db.putTimer != nil {
