@@ -88,7 +88,7 @@ func (db *BadgerDatabase) CleanUp() {
 		log.Info("PurgeOlderVersions error", "err", err)
 		err = nil
 	}
-	err = db.db.RunValueLogGC(0.9)
+	err = db.db.RunValueLogGC(0.5)
 	if err != nil {
 		log.Info("RunValueLogGC error", "err", err)
 	}
