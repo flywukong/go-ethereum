@@ -33,7 +33,6 @@ var deduplicateData = []byte("dbUpgrade_20170714deduplicateData")
 // upgradeDeduplicateData checks the chain database version and
 // starts a background process to make upgrades if necessary.
 // Returns a stop function that blocks until the process has
-
 // been safely stopped.
 func upgradeDeduplicateData(db ethdb.Database) func() error {
 	// If the database is already converted or empty, bail out
@@ -63,7 +62,7 @@ func upgradeDeduplicateData(db ethdb.Database) func() error {
 			failed    error
 		)
 		for failed == nil && it.Next() {
-			// Skip any entries that don't look like old transaction meta entries (<hash>0x01))
+			// Skip any entries that don't look like old transaction meta entries (<hash>0x01)
 			key := it.Key()
 			if len(key) != common.HashLength+1 || key[common.HashLength] != 0x01 {
 				continue
