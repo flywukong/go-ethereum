@@ -194,6 +194,8 @@ func (vlog *valueLog) iterate(lf *logFile, offset uint32, fn logEntry) error {
 
 	truncate := false
 	recordOffset := offset
+	var lastCommit uint64
+	var validEndOffset uint32
 	for {
 		hash := crc32.New(y.CastagnoliCrcTable)
 		tee := io.TeeReader(reader, hash)
@@ -267,6 +269,39 @@ func (vlog *valueLog) iterate(lf *logFile, offset uint32, fn logEntry) error {
 		vp.Offset = e.offset
 		vp.Fid = lf.fid
 
+		if e.meta&bitFinTxn > 0 {
+			txnTs, err := strconv.ParseUint(string(e.Value), 10, 64)
+			if err != nil || lastCommit != txnTs {
+				truncate = true
+				break
+			}
+			// Got the end of txn. Now we can store them.
+			lastCommit = 0
+			validEndOffset = recordOffset
+		} else if e.meta&bitTxn == 0 {
+			// We shouldn't get this entry in the middle of a transaction.
+			if lastCommit != 0 {
+				truncate = true
+				break
+			}
+			validEndOffset = recordOffset
+		} else {
+			// TODO: Remove this once we merge v2.0-candidate branch. This shouldn't
+			// happen in 2.0 because we are no longer moving entries within the value
+			// logs, everything should be either txn or txnfin.
+			txnTs := y.ParseTs(e.Key)
+			if lastCommit == 0 {
+				lastCommit = txnTs
+			}
+			if lastCommit != txnTs {
+				truncate = true
+				break
+			}
+		}
+
+		if vlog.opt.ReadOnly {
+			return ErrReplayNeeded
+		}
 		if err := fn(e, vp); err != nil {
 			if err == errStop {
 				break
@@ -275,11 +310,13 @@ func (vlog *valueLog) iterate(lf *logFile, offset uint32, fn logEntry) error {
 		}
 	}
 
-	if truncate && len(lf.fmap) == 0 {
+	if vlog.opt.Truncate && truncate && len(lf.fmap) == 0 {
 		// Only truncate if the file isn't mmaped. Otherwise, Windows would puke.
-		if err := lf.fd.Truncate(int64(recordOffset)); err != nil {
+		if err := lf.fd.Truncate(int64(validEndOffset)); err != nil {
 			return err
 		}
+	} else if truncate {
+		return ErrTruncateNeeded
 	}
 
 	return nil
@@ -484,7 +521,7 @@ func (vlog *valueLog) fpath(fid uint32) string {
 	return vlogFilePath(vlog.dirPath, fid)
 }
 
-func (vlog *valueLog) openOrCreateFiles() error {
+func (vlog *valueLog) openOrCreateFiles(readOnly bool) error {
 	files, err := ioutil.ReadDir(vlog.dirPath)
 	if err != nil {
 		return errors.Wrapf(err, "Error while opening value log")
@@ -519,12 +556,18 @@ func (vlog *valueLog) openOrCreateFiles() error {
 	vlog.maxFid = uint32(maxFid)
 
 	// Open all previous log files as read only. Open the last log file
-	// as read write.
+	// as read write (unless the DB is read only).
 	for fid, lf := range vlog.filesMap {
 		if fid == maxFid {
-			if lf.fd, err = y.OpenExistingSyncedFile(vlog.fpath(fid),
-				vlog.opt.SyncWrites); err != nil {
-				return errors.Wrapf(err, "Unable to open value log file as RDWR")
+			var flags uint32
+			if vlog.opt.SyncWrites {
+				flags |= y.Sync
+			}
+			if readOnly {
+				flags |= y.ReadOnly
+			}
+			if lf.fd, err = y.OpenExistingFile(vlog.fpath(fid), flags); err != nil {
+				return errors.Wrapf(err, "Unable to open value log file")
 			}
 		} else {
 			if err := lf.openReadOnly(); err != nil {
@@ -570,7 +613,7 @@ func (vlog *valueLog) Open(kv *DB, opt Options) error {
 	vlog.opt = opt
 	vlog.kv = kv
 	vlog.filesMap = make(map[uint32]*logFile)
-	if err := vlog.openOrCreateFiles(); err != nil {
+	if err := vlog.openOrCreateFiles(kv.opt.ReadOnly); err != nil {
 		return errors.Wrapf(err, "Unable to open value log")
 	}
 
@@ -592,7 +635,7 @@ func (vlog *valueLog) Close() error {
 			err = munmapErr
 		}
 
-		if id == vlog.maxFid {
+		if !vlog.opt.ReadOnly && id == vlog.maxFid {
 			// truncate writable log file to correct offset.
 			if truncErr := f.fd.Truncate(
 				int64(vlog.writableLogOffset)); truncErr != nil && err == nil {
@@ -764,11 +807,12 @@ func (vlog *valueLog) write(reqs []*request) error {
 			}
 			p.Len = uint32(plen)
 			b.Ptrs = append(b.Ptrs, p)
-
-			if p.Offset > uint32(vlog.opt.ValueLogFileSize) {
-				if err := toDisk(); err != nil {
-					return err
-				}
+		}
+		// We write to disk here so that all entries that are part of the same transaction are
+		// written to the same vlog file.
+		if vlog.writableOffset()+uint32(vlog.buf.Len()) > uint32(vlog.opt.ValueLogFileSize) {
+			if err := toDisk(); err != nil {
+				return err
 			}
 		}
 	}

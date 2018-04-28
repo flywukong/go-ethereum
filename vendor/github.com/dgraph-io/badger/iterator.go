@@ -53,18 +53,30 @@ type Item struct {
 	txn       *Txn
 }
 
+// String returns a string representation of Item
+func (item *Item) String() string {
+	return fmt.Sprintf("key=%q, version=%d, meta=%x", item.Key(), item.Version(), item.meta)
+}
+
+// Deprecated
 // ToString returns a string representation of Item
 func (item *Item) ToString() string {
-	return fmt.Sprintf("key=%q, version=%d, meta=%x", item.Key(), item.Version(), item.meta)
-
+	return item.String()
 }
 
 // Key returns the key.
 //
 // Key is only valid as long as item is valid, or transaction is valid.  If you need to use it
-// outside its validity, please copy it.
+// outside its validity, please use KeyCopy
 func (item *Item) Key() []byte {
 	return item.key
+}
+
+// KeyCopy returns a copy of the key of the item, writing it to dst slice.
+// If nil is passed, or capacity of dst isn't sufficient, a new slice would be allocated and
+// returned.
+func (item *Item) KeyCopy(dst []byte) []byte {
+	return y.SafeCopy(dst, item.key)
 }
 
 // Version returns the commit timestamp of the item.
@@ -80,7 +92,8 @@ func (item *Item) Version() uint64 {
 // reused.
 //
 // If you need to use a value outside a transaction, please use Item.ValueCopy
-// instead, or copy it yourself.
+// instead, or copy it yourself. Value might change once discard or commit is called.
+// Use ValueCopy if you want to do a Set after Get.
 func (item *Item) Value() ([]byte, error) {
 	item.wg.Wait()
 	if item.status == prefetched {
@@ -115,6 +128,11 @@ func (item *Item) hasValue() bool {
 		return false
 	}
 	return true
+}
+
+// IsDeletedOrExpired returns true if item contains deleted or expired value.
+func (item *Item) IsDeletedOrExpired() bool {
+	return isDeletedOrExpired(item.meta, item.expiresAt)
 }
 
 func (item *Item) yieldItemValue() ([]byte, func(), error) {
@@ -315,6 +333,19 @@ func (it *Iterator) ValidForPrefix(prefix []byte) bool {
 // Close would close the iterator. It is important to call this when you're done with iteration.
 func (it *Iterator) Close() {
 	it.iitr.Close()
+
+	// It is important to wait for the fill goroutines to finish. Otherwise, we might leave zombie
+	// goroutines behind, which are waiting to acquire file read locks after DB has been closed.
+	waitFor := func(l list) {
+		item := l.pop()
+		for item != nil {
+			item.wg.Wait()
+			item = l.pop()
+		}
+	}
+	waitFor(it.waste)
+	waitFor(it.data)
+
 	// TODO: We could handle this error.
 	_ = it.txn.db.vlog.decrIteratorCount()
 }

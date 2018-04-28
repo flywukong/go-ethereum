@@ -141,10 +141,10 @@ not checking for errors in some places for simplicity):
 updates := make(map[string]string)
 txn := db.NewTransaction(true)
 for k,v := range updates {
-  if err := txn.Set(byte[](k),byte[](v)); err == ErrTxnTooBig {
+  if err := txn.Set([]byte(k),[]byte(v)); err == ErrTxnTooBig {
     _ = txn.Commit()
     txn = db.NewTransaction(..)
-    _ = txn.Set(k,v) 
+    _ = txn.Set([]byte(k),[]byte(v)) 
   }
 }
 _ = txn.Commit()
@@ -328,6 +328,7 @@ err := db.View(func(txn *badger.Txn) error {
   opts := badger.DefaultIteratorOptions
   opts.PrefetchSize = 10
   it := txn.NewIterator(opts)
+  defer it.Close()
   for it.Rewind(); it.Valid(); it.Next() {
     item := it.Item()
     k := item.Key()
@@ -356,6 +357,7 @@ To iterate over a key prefix, you can combine `Seek()` and `ValidForPrefix()`:
 ```go
 db.View(func(txn *badger.Txn) error {
   it := txn.NewIterator(badger.DefaultIteratorOptions)
+  defer it.Close()
   prefix := []byte("1234")
   for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
     item := it.Item()
@@ -383,6 +385,7 @@ err := db.View(func(txn *badger.Txn) error {
   opts := badger.DefaultIteratorOptions
   opts.PrefetchValues = false
   it := txn.NewIterator(opts)
+  defer it.Close()
   for it.Rewind(); it.Valid(); it.Next() {
     item := it.Item()
     k := item.Key()
@@ -539,8 +542,9 @@ above).
 [badger-bench]: https://github.com/dgraph-io/badger-bench
 
 ## Other Projects Using Badger
-Below is a list of public, open source projects that use Badger:
+Below is a list of known projects that use Badger:
 
+* [Usenet Express](https://usenetexpress.com/) - Serving over 300TB of data with Badger.
 * [Dgraph](https://github.com/dgraph-io/dgraph) - Distributed graph database.
 * [go-ipfs](https://github.com/ipfs/go-ipfs) - Go client for the InterPlanetary File System (IPFS), a new hypermedia distribution protocol.
 * [0-stor](https://github.com/zero-os/0-stor) - Single device object store.
@@ -585,11 +589,24 @@ get compacted to disk. The compaction would only happen once `MaxTableSize` has 
 you're doing a few writes and then checking, you might not see anything on disk. Once you `Close`
 the database, you'll see these writes on disk.
 
+- **Reverse iteration doesn't give me the right results.**
+
+Just like forward iteration goes to the first key which is equal or greater than the SEEK key, reverse iteration goes to the first key which is equal or lesser than the SEEK key. Therefore, SEEK key would not be part of the results. You can typically add a tilde (~) as a suffix to the SEEK key to include it in the results. See the following issues: [#436](https://github.com/dgraph-io/badger/issues/436) and [#347](https://github.com/dgraph-io/badger/issues/347).
+
 - **Which instances should I use for Badger?**
 
 We recommend using instances which provide local SSD storage, without any limit
 on the maximum IOPS. In AWS, these are storage optimized instances like i3. They
 provide local SSDs which clock 100K IOPS over 4KB blocks easily.
+
+- **I'm getting a closed channel error. Why?**
+
+```
+panic: close of closed channel
+panic: send on closed channel
+```
+
+If you're seeing panics like above, this would be because you're operating on a closed DB. This can happen, if you call `Close()` before sending a write, or multiple times. You should ensure that you only call `Close()` once, and all your read/write operations finish before closing.
 
 - **Are there any Go specific settings that I should use?**
 

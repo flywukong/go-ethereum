@@ -27,6 +27,7 @@ import (
 	"github.com/dgraph-io/badger"
 	"github.com/dgraph-io/badger/options"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/golang/snappy"
 	
 )
 
@@ -60,6 +61,12 @@ func NewBadgerDatabase(file string) (*BadgerDatabase, error) {
 	opts.SyncWrites = false
 	opts.ValueLogFileSize = 1 << 30
 	opts.TableLoadingMode = options.MemoryMap
+	opts.NumMemtables = 20
+	opts.NumLevelZeroTables = 20
+	opts.NumLevelZeroTablesStall = 40
+	opts.ValueThreshold = 4
+	opts.NumCompactors = 10
+	opts.MaxTableSize = 256 << 20
 	db, err := badger.Open(opts)
 
 	// (Re)check for errors and abort if opening of the db failed
@@ -107,14 +114,14 @@ func (db *BadgerDatabase) Put(key []byte, value []byte) error {
 	
 	
 	return db.db.Update(func(txn *badger.Txn) error {
-  		err := txn.Set(key, value)
+  		err := txn.Set(snappy.Encode(nil, key), snappy.Encode(nil, value))
   		return err
 	})
 }
 
 func (db *BadgerDatabase) Has(key []byte) (ret bool, err error) {
 	err = db.db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(key)
+		item, err := txn.Get(snappy.Encode(nil, key))
 		if item != nil {
 			ret = true
 		}
@@ -134,7 +141,7 @@ func (db *BadgerDatabase) Get(key []byte) (dat []byte, err error) {
 		defer db.getTimer.UpdateSince(time.Now())
 	}
 	err = db.db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(key)
+		item, err := txn.Get(snappy.Encode(nil, key))
 		if err != nil {
 			return err
 		}
@@ -142,7 +149,7 @@ func (db *BadgerDatabase) Get(key []byte) (dat []byte, err error) {
 		if err != nil {
 			return err
 		}
-		dat = common.CopyBytes(val)
+		dat, _ = snappy.Decode(nil, val)
 		return nil
 	})
 	//Update the actually retrieved amount of data
@@ -166,7 +173,7 @@ func (db *BadgerDatabase) Delete(key []byte) error {
 		defer db.delTimer.UpdateSince(time.Now())
 	}
 	return db.db.Update(func(txn *badger.Txn) error {
-  		err := txn.Delete(key)
+  		err := txn.Delete(snappy.Encode(nil, key))
 		if err == badger.ErrKeyNotFound {
 			err = nil
 		}
@@ -202,11 +209,12 @@ func (it *badgerIterator) Next() bool {
 }
 
 func (it *badgerIterator) Seek(key []byte) {
-	it.internIterator.Seek(key)
+	it.internIterator.Seek(snappy.Encode(nil, key))
 }
 
 func (it *badgerIterator) Key() []byte {
-	return it.internIterator.Item().Key()
+	ret, _ := snappy.Decode(nil, it.internIterator.Item().Key())
+	return ret
 }
 
 func (it *badgerIterator) Value() []byte {
@@ -214,7 +222,8 @@ func (it *badgerIterator) Value() []byte {
 	if err != nil {
 		return nil
 	}
-	return value
+	ret, _ := snappy.Decode(nil, value)
+	return ret
 }
 
 func (db *BadgerDatabase) NewIterator() badgerIterator {
@@ -284,7 +293,7 @@ func (b *badgerBatch) Write() (err error) {
 	
 	err = b.db.db.Update(func(txn *badger.Txn) error {
   		for key, value := range b.b {
-			err = txn.Set([]byte(key), value)
+			err = txn.Set(snappy.Encode(nil, []byte(key)), snappy.Encode(nil, value)) 
 		}
   		return err
 	})
