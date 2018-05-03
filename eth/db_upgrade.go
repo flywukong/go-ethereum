@@ -49,10 +49,10 @@ func upgradeDeduplicateData(db ethdb.Database) func() error {
 	stop := make(chan chan error)
 
 	go func() {
-		// Create an iterator to read the entire database and covert old lookup entires
-		it := db.(*ethdb.LDBDatabase).NewIterator()
+		// Create an iterator to read the entire database and convert old lookup entires
+		it := db.(*ethdb.BadgerDatabase).NewIterator()
 		defer func() {
-			if it != nil {
+			if it.Released() != true {
 				it.Release()
 			}
 		}()
@@ -86,7 +86,7 @@ func upgradeDeduplicateData(db ethdb.Database) func() error {
 				}
 			}
 			// Convert the old metadata to a new lookup entry, delete duplicate data
-			if failed = db.Put(append([]byte("l"), hash...), it.Value()); failed == nil { // Write the new lookup entry
+			if failed = db.Put(append([]byte("l"), hash...), it.Value()); failed == nil { // Write the new looku entry
 				if failed = db.Delete(hash); failed == nil { // Delete the duplicate transaction data
 					if failed = db.Delete(append([]byte("receipts-"), hash...)); failed == nil { // Delete the duplicate receipt data
 						if failed = db.Delete(key); failed != nil { // Delete the old transaction metadata
@@ -100,7 +100,7 @@ func upgradeDeduplicateData(db ethdb.Database) func() error {
 			converted++
 			if converted%100000 == 0 {
 				it.Release()
-				it = db.(*ethdb.LDBDatabase).NewIterator()
+				it = db.(*ethdb.BadgerDatabase).NewIterator()
 				it.Seek(key)
 
 				log.Info("Deduplicating database entries", "deduped", converted)
@@ -121,7 +121,6 @@ func upgradeDeduplicateData(db ethdb.Database) func() error {
 			log.Error("Database deduplication failed", "deduped", converted, "err", failed)
 		}
 		it.Release()
-		it = nil
 
 		errc := <-stop
 		errc <- failed

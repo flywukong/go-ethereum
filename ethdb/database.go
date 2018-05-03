@@ -384,7 +384,7 @@ func (b *ldbBatch) Reset() {
 	b.b.Reset()
 	b.size = 0
 }
-
+/*
 type table struct {
 	db     Database
 	prefix string
@@ -448,3 +448,4 @@ func (tb *tableBatch) ValueSize() int {
 func (tb *tableBatch) Reset() {
 	tb.batch.Reset()
 }
+*/
