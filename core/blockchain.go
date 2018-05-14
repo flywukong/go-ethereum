@@ -924,7 +924,7 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 				size  = triedb.Size()
 				limit = common.StorageSize(bc.cacheConfig.TrieNodeLimit) * 1024 * 1024
 			)
-			if size > 8*limit  {
+			if size > limit  {
 				// If we're exceeding limits but haven't reached a large enough memory gap,
 				// warn the user that the system is becoming unstable.
 				/*
