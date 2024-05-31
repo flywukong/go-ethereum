@@ -134,7 +134,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	if config.MultiDataBase {
 		log.Info("multiDataBase supported")
 	} else {
-		log.Info("multiDataBase not support"
+		log.Info("multiDataBase not support")
 	}
 	// Assemble the Ethereum object
 	chainDb, err := stack.OpenAndMergeDatabase("chaindata", config.DatabaseCache, config.DatabaseHandles,
