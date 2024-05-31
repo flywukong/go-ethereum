@@ -745,7 +745,7 @@ func (n *Node) OpenDatabase(name string, cache, handles int, namespace string, r
 	return db, err
 }
 
-func (n *Node) OpenAndMergeDatabase(name string, cache, handles int, ancient, namespace string, readonly bool) (ethdb.Database, error) {
+func (n *Node) OpenAndMergeDatabase(name string, cache, handles int, ancient, namespace string, readonly, mulidatabase bool) (ethdb.Database, error) {
 	var (
 		err                error
 		stateDiskDb        ethdb.Database

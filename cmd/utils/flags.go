@@ -1714,6 +1714,9 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	if ctx.IsSet(StateSchemeFlag.Name) {
 		cfg.StateScheme = ctx.String(StateSchemeFlag.Name)
 	}
+	if ctx.IsSet(MultiDataBaseFlag.Name) {
+		cfg.MultiDataBase = true
+	}
 	// Parse transaction history flag, if user is still using legacy config
 	// file with 'TxLookupLimit' configured, copy the value to 'TransactionHistory'.
 	if cfg.TransactionHistory == ethconfig.Defaults.TransactionHistory && cfg.TxLookupLimit != ethconfig.Defaults.TxLookupLimit {
