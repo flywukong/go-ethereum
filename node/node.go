@@ -756,6 +756,9 @@ func (n *Node) OpenAndMergeDatabase(name string, cache, handles int, ancient, na
 	)
 
 	isMultiDatabase := n.CheckIfMultiDataBase()
+	if mulidatabase {
+		isMultiDatabase = true
+	}
 	// Open the separated state database if the state directory exists
 	if isMultiDatabase {
 		// Resource allocation rules:
