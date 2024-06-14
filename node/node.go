@@ -747,9 +747,9 @@ func (n *Node) OpenDatabase(name string, cache, handles int, namespace string, r
 
 func (n *Node) OpenAndMergeDatabase(name string, cache, handles int, ancient, namespace string, readonly, mulidatabase bool) (ethdb.Database, error) {
 	var (
-		err                error
-		stateDiskDb        ethdb.Database
-		blockDb            ethdb.Database
+		err         error
+		stateDiskDb ethdb.Database
+		//	blockDb            ethdb.Database
 		blockDbHandlesSize int
 		chainDataHandles   = handles
 		chainDbCache       = cache
@@ -781,10 +781,13 @@ func (n *Node) OpenAndMergeDatabase(name string, cache, handles int, ancient, na
 			return nil, err
 		}
 
-		blockDb, err = n.OpenDatabaseWithFreezer(name+"/block", blockDbCacheSize, blockDbHandlesSize, "", "eth/db/blockdata/", readonly)
-		if err != nil {
-			return nil, err
-		}
+		/*
+			blockDb, err = n.OpenDatabaseWithFreezer(name+"/block", blockDbCacheSize, blockDbHandlesSize, "", "eth/db/blockdata/", readonly)
+			if err != nil {
+				return nil, err
+			}
+
+		*/
 		log.Warn("Multi-database is an experimental feature")
 	}
 
@@ -795,7 +798,7 @@ func (n *Node) OpenAndMergeDatabase(name string, cache, handles int, ancient, na
 
 	if isMultiDatabase {
 		chainDB.SetStateStore(stateDiskDb)
-		chainDB.SetBlockStore(blockDb)
+		//	chainDB.SetBlockStore(blockDb)
 	}
 
 	return chainDB, nil
