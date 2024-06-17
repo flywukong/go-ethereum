@@ -187,8 +187,10 @@ func WriteHeadHeaderHash(db ethdb.KeyValueWriter, hash common.Hash) {
 
 // ReadHeadBlockHash retrieves the hash of the current canonical head block.
 func ReadHeadBlockHash(db ethdb.KeyValueReader) common.Hash {
+	log.Info("read the head block hash")
 	data, _ := db.Get(headBlockKey)
 	if len(data) == 0 {
+		log.Info("read the head block hash nil")
 		return common.Hash{}
 	}
 	return common.BytesToHash(data)
@@ -196,6 +198,7 @@ func ReadHeadBlockHash(db ethdb.KeyValueReader) common.Hash {
 
 // WriteHeadBlockHash stores the head block's hash.
 func WriteHeadBlockHash(db ethdb.KeyValueWriter, hash common.Hash) {
+	log.Info("write the head block hash")
 	if err := db.Put(headBlockKey, hash.Bytes()); err != nil {
 		log.Crit("Failed to store last block's hash", "err", err)
 	}
