@@ -2084,8 +2084,8 @@ func MakeChainDatabase(ctx *cli.Context, stack *node.Node, readonly bool) ethdb.
 		if stack.CheckIfMultiDataBase() && err == nil {
 			stateDiskDb := MakeStateDataBase(ctx, stack, readonly, false)
 			chainDb.SetStateStore(stateDiskDb)
-			blockDb := MakeBlockDatabase(ctx, stack, readonly, false)
-			chainDb.SetBlockStore(blockDb)
+			//	blockDb := MakeBlockDatabase(ctx, stack, readonly, false)
+			//	chainDb.SetBlockStore(blockDb)
 		}
 	}
 	if err != nil {

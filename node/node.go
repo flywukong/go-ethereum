@@ -855,13 +855,20 @@ func (n *Node) CheckIfMultiDataBase() bool {
 		blockExist = false
 	}
 
-	if stateExist && blockExist {
+	if stateExist || blockExist {
 		return true
-	} else if !stateExist && !blockExist {
-		return false
-	} else {
-		panic("data corruption! missing block or state dir.")
 	}
+	/*
+		if stateExist && blockExist {
+			return true
+		} else if !stateExist && !blockExist {
+			return false
+		} else {
+			panic("data corruption! missing block or state dir.")
+		}
+
+	*/
+	return false
 }
 
 // ResolvePath returns the absolute path of a resource in the instance directory.
