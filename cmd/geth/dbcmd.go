@@ -490,36 +490,51 @@ func dbCompact(ctx *cli.Context) error {
 
 // dbGet shows the value of a given database key
 func dbGet(ctx *cli.Context) error {
-	if ctx.NArg() != 1 {
-		return fmt.Errorf("required arguments: %v", ctx.Command.ArgsUsage)
-	}
+	/*
+		if ctx.NArg() != 1 {
+			return fmt.Errorf("required arguments: %v", ctx.Command.ArgsUsage)
+		}
+
+	*/
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
 	db := utils.MakeChainDatabase(ctx, stack, true)
 	defer db.Close()
-
-	key, err := common.ParseHexOrString(ctx.Args().Get(0))
-	if err != nil {
-		log.Info("Could not decode the key", "error", err)
-		return err
-	}
-	opDb := db
-	if stack.CheckIfMultiDataBase() {
-		keyType := rawdb.DataTypeByKey(key)
-		if keyType == rawdb.StateDataType {
-			opDb = db.StateStore()
-		} else if keyType == rawdb.BlockDataType {
-			opDb = db.BlockStore()
+	/*
+		key, err := common.ParseHexOrString(ctx.Args().Get(0))
+		if err != nil {
+			log.Info("Could not decode the key", "error", err)
+			return err
 		}
-	}
+		*
 
-	data, err := opDb.Get(key)
-	if err != nil {
-		log.Info("Get operation failed", "key", fmt.Sprintf("%#x", key), "error", err)
-		return err
+	*/
+	data := rawdb.ReadHeadBlockHash(db)
+	if len(data) == 0 {
+		fmt.Println("LastBlock not exist")
+	} else {
+		fmt.Println("lastest block is ", data.String())
 	}
-	fmt.Printf("key %#x: %#x\n", key, data)
+	/*
+		opDb := db
+		if stack.CheckIfMultiDataBase() {
+			keyType := rawdb.DataTypeByKey(key)
+			if keyType == rawdb.StateDataType {
+				opDb = db.StateStore()
+			} else if keyType == rawdb.BlockDataType {
+				opDb = db.BlockStore()
+			}
+		}
+
+		data, err := opDb.Get(key)
+		if err != nil {
+			log.Info("Get operation failed", "key", fmt.Sprintf("%#x", key), "error", err)
+			return err
+		}
+
+	*/
+	fmt.Printf("key %#x: %#x\n", "last block", data)
 	return nil
 }
 
