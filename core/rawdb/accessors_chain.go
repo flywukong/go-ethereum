@@ -199,6 +199,9 @@ func ReadHeadBlockHash(db ethdb.KeyValueReader) common.Hash {
 // WriteHeadBlockHash stores the head block's hash.
 func WriteHeadBlockHash(db ethdb.KeyValueWriter, hash common.Hash) {
 	log.Info("write the head block hash")
+	if len(hash.Bytes()) == 0 {
+		log.Info("write the head block hash empty")
+	}
 	if err := db.Put(headBlockKey, hash.Bytes()); err != nil {
 		log.Crit("Failed to store last block's hash", "err", err)
 	}
